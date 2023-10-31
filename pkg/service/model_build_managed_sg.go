@@ -25,6 +25,7 @@ func (t *defaultModelBuildTask) buildManagedSecurityGroup(ctx context.Context, i
 	if err != nil {
 		return nil, err
 	}
+
 	sg := ec2model.NewSecurityGroup(t.stack, resourceIDManagedSecurityGroup, sgSpec)
 	return sg, nil
 }
@@ -50,6 +51,10 @@ func (t *defaultModelBuildTask) buildManagedSecurityGroupSpec(ctx context.Contex
 var invalidSecurityGroupNamePtn, _ = regexp.Compile("[[:^alnum:]]")
 
 func (t *defaultModelBuildTask) buildManagedSecurityGroupName(_ context.Context) string {
+	stackName := t.serviceUtils.GetServiceStackName(t.service)
+	if stackName != "" {
+		return stackName
+	}
 	uuidHash := sha256.New()
 	_, _ = uuidHash.Write([]byte(t.clusterName))
 	_, _ = uuidHash.Write([]byte(t.service.Name))
@@ -68,31 +73,36 @@ func (t *defaultModelBuildTask) buildManagedSecurityGroupIngressPermissions(ctx 
 	if err != nil {
 		return nil, err
 	}
-	for _, port := range t.service.Spec.Ports {
-		listenPort := int64(port.Port)
-		for _, cidr := range cidrs {
-			if !strings.Contains(cidr, ":") {
-				permissions = append(permissions, ec2model.IPPermission{
-					IPProtocol: strings.ToLower(string(port.Protocol)),
-					FromPort:   awssdk.Int64(listenPort),
-					ToPort:     awssdk.Int64(listenPort),
-					IPRanges: []ec2model.IPRange{
-						{
-							CIDRIP: cidr,
+	for _, service := range t.stack.ListServices() {
+		for _, port := range service.Spec.Ports {
+			listenPort := int64(port.Port)
+			if service.Annotations[LoadBalancerAllocatingPortKey] == "true" {
+				listenPort = int64(port.NodePort)
+			}
+			for _, cidr := range cidrs {
+				if !strings.Contains(cidr, ":") {
+					permissions = append(permissions, ec2model.IPPermission{
+						IPProtocol: strings.ToLower(string(port.Protocol)),
+						FromPort:   awssdk.Int64(listenPort),
+						ToPort:     awssdk.Int64(listenPort),
+						IPRanges: []ec2model.IPRange{
+							{
+								CIDRIP: cidr,
+							},
 						},
-					},
-				})
-			} else {
-				permissions = append(permissions, ec2model.IPPermission{
-					IPProtocol: strings.ToLower(string(port.Protocol)),
-					FromPort:   awssdk.Int64(listenPort),
-					ToPort:     awssdk.Int64(listenPort),
-					IPv6Range: []ec2model.IPv6Range{
-						{
-							CIDRIPv6: cidr,
+					})
+				} else {
+					permissions = append(permissions, ec2model.IPPermission{
+						IPProtocol: strings.ToLower(string(port.Protocol)),
+						FromPort:   awssdk.Int64(listenPort),
+						ToPort:     awssdk.Int64(listenPort),
+						IPv6Range: []ec2model.IPv6Range{
+							{
+								CIDRIPv6: cidr,
+							},
 						},
-					},
-				})
+					})
+				}
 			}
 		}
 	}

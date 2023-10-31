@@ -43,6 +43,13 @@ func (t *defaultModelBuildTask) buildLoadBalancer(ctx context.Context, scheme el
 	if err != nil {
 		return err
 	}
+	var resLBs []*elbv2model.LoadBalancer
+	t.stack.ListResources(&resLBs)
+	if len(resLBs) > 0 {
+		t.loadBalancer = resLBs[0]
+		t.loadBalancer.Spec = spec
+		return nil
+	}
 	t.loadBalancer = elbv2model.NewLoadBalancer(t.stack, resourceIDLoadBalancer, spec)
 	return nil
 }
@@ -109,7 +116,14 @@ func (t *defaultModelBuildTask) buildLoadBalancerSecurityGroups(ctx context.Cont
 		if !t.enableBackendSG {
 			t.backendSGIDToken = managedSG.GroupID()
 		} else {
-			backendSGID, err := t.backendSGProvider.Get(ctx, networking.ResourceTypeService, []types.NamespacedName{k8s.NamespacedName(t.service)})
+			nsName := k8s.NamespacedName(t.service)
+			if t.service.Annotations[LoadBalancerAllocatingPortKey] == "true" {
+				nsName = types.NamespacedName{
+					Namespace: "stack",
+					Name:      t.service.Annotations[LoadBalancerStackKey],
+				}
+			}
+			backendSGID, err := t.backendSGProvider.Get(ctx, networking.ResourceTypeService, []types.NamespacedName{nsName})
 			if err != nil {
 				return nil, err
 			}
@@ -473,6 +487,10 @@ func (t *defaultModelBuildTask) getAnnotationSpecificLbAttributes() (map[string]
 var invalidLoadBalancerNamePattern = regexp.MustCompile("[[:^alnum:]]")
 
 func (t *defaultModelBuildTask) buildLoadBalancerName(_ context.Context, scheme elbv2model.LoadBalancerScheme) (string, error) {
+	stackName := t.serviceUtils.GetServiceStackName(t.service)
+	if stackName != "" {
+		return stackName, nil
+	}
 	var name string
 	if exists := t.annotationParser.ParseStringAnnotation(annotations.SvcLBSuffixLoadBalancerName, &name, t.service.Annotations); exists {
 		// The name of the loadbalancer can only have up to 32 characters

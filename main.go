@@ -33,15 +33,11 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/throttle"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
-	"sigs.k8s.io/aws-load-balancer-controller/pkg/inject"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/targetgroupbinding"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/version"
-	corewebhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/core"
-	elbv2webhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/elbv2"
-	networkingwebhook "sigs.k8s.io/aws-load-balancer-controller/webhooks/networking"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -91,7 +87,7 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
-	config.ConfigureWebhookServer(controllerCFG.RuntimeConfig, mgr)
+	//config.ConfigureWebhookServer(controllerCFG.RuntimeConfig, mgr)
 	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "unable to obtain clientSet")
@@ -149,14 +145,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	podReadinessGateInjector := inject.NewPodReadinessGate(controllerCFG.PodWebhookConfig,
-		mgr.GetClient(), ctrl.Log.WithName("pod-readiness-gate-injector"))
-	corewebhook.NewPodMutator(podReadinessGateInjector).SetupWithManager(mgr)
-	corewebhook.NewServiceMutator(controllerCFG.ServiceConfig.LoadBalancerClass, ctrl.Log).SetupWithManager(mgr)
-	elbv2webhook.NewIngressClassParamsValidator().SetupWithManager(mgr)
-	elbv2webhook.NewTargetGroupBindingMutator(cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
-	elbv2webhook.NewTargetGroupBindingValidator(mgr.GetClient(), cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
-	networkingwebhook.NewIngressValidator(mgr.GetClient(), controllerCFG.IngressConfig, ctrl.Log).SetupWithManager(mgr)
+	//podReadinessGateInjector := inject.NewPodReadinessGate(controllerCFG.PodWebhookConfig,
+	//	mgr.GetClient(), ctrl.Log.WithName("pod-readiness-gate-injector"))
+	//corewebhook.NewPodMutator(podReadinessGateInjector).SetupWithManager(mgr)
+	//corewebhook.NewServiceMutator(controllerCFG.ServiceConfig.LoadBalancerClass, ctrl.Log).SetupWithManager(mgr)
+	//elbv2webhook.NewIngressClassParamsValidator().SetupWithManager(mgr)
+	//elbv2webhook.NewTargetGroupBindingMutator(cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
+	//elbv2webhook.NewTargetGroupBindingValidator(mgr.GetClient(), cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
+	//networkingwebhook.NewIngressValidator(mgr.GetClient(), controllerCFG.IngressConfig, ctrl.Log).SetupWithManager(mgr)
 	//+kubebuilder:scaffold:builder
 
 	go func() {

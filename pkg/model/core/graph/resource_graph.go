@@ -13,6 +13,8 @@ type ResourceGraph interface {
 	// Add a node into ResourceGraph.
 	AddNode(node ResourceUID)
 
+	RemoveNode(node ResourceUID)
+
 	// Add a edge into ResourceGraph, where dstNode depends on srcNode.
 	AddEdge(srcNode ResourceUID, dstNode ResourceUID)
 
@@ -42,6 +44,24 @@ type defaultResourceGraph struct {
 // Add a node into ResourceGraph.
 func (g *defaultResourceGraph) AddNode(node ResourceUID) {
 	g.nodes = append(g.nodes, node)
+}
+
+func (g *defaultResourceGraph) RemoveNode(node ResourceUID) {
+	for i, n := range g.nodes {
+		if n == node {
+			g.nodes = append(g.nodes[:i], g.nodes[i+1:]...)
+			break
+		}
+	}
+	delete(g.outEdges, node)
+	for _, nodes := range g.outEdges {
+		for i, n := range nodes {
+			if n == node {
+				nodes = append(nodes[:i], nodes[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 // Add a edge into ResourceGraph, where dstNode depends on srcNode.

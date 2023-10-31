@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
@@ -14,6 +16,8 @@ type ServiceUtils interface {
 
 	// IsServicePendingFinalization returns true if the service contains the aws-load-balancer-controller finalizer
 	IsServicePendingFinalization(service *corev1.Service) bool
+
+	GetServiceStackName(service *corev1.Service) string
 }
 
 func NewServiceUtils(annotationsParser annotations.Parser, serviceFinalizer string, loadBalancerClass string,
@@ -59,6 +63,13 @@ func (u *defaultServiceUtils) IsServiceSupported(service *corev1.Service) bool {
 		}
 	}
 	return u.checkAWSLoadBalancerTypeAnnotation(service)
+}
+
+func (u *defaultServiceUtils) GetServiceStackName(service *corev1.Service) string {
+	if service.Annotations[LoadBalancerStackKey] != "" {
+		return fmt.Sprintf("k8s-%.8s", service.Annotations[LoadBalancerStackKey])
+	}
+	return ""
 }
 
 func (u *defaultServiceUtils) checkAWSLoadBalancerTypeAnnotation(service *corev1.Service) bool {

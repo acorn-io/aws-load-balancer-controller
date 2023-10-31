@@ -19,12 +19,18 @@ func (t *defaultModelBuildTask) buildListeners(ctx context.Context, scheme elbv2
 		return err
 	}
 
-	for _, port := range t.service.Spec.Ports {
-		_, err := t.buildListener(ctx, port, *cfg, scheme)
-		if err != nil {
-			return err
+	originalSvc := t.service
+	for _, service := range t.stack.ListServices() {
+		t.service = &service
+		for _, port := range service.Spec.Ports {
+			_, err := t.buildListener(ctx, port, *cfg, scheme)
+			if err != nil {
+				return err
+			}
 		}
 	}
+	t.service = originalSvc
+
 	return nil
 }
 
@@ -35,6 +41,9 @@ func (t *defaultModelBuildTask) buildListener(ctx context.Context, port corev1.S
 		return nil, err
 	}
 	listenerResID := fmt.Sprintf("%v", port.Port)
+	if t.service.Annotations[LoadBalancerAllocatingPortKey] == "true" {
+		listenerResID = fmt.Sprintf("%v", port.NodePort)
+	}
 	ls := elbv2model.NewListener(t.stack, listenerResID, lsSpec)
 	return ls, nil
 }
@@ -73,9 +82,13 @@ func (t *defaultModelBuildTask) buildListenerSpec(ctx context.Context, port core
 	}
 
 	defaultActions := t.buildListenerDefaultActions(ctx, targetGroup)
+	portNumber := int64(port.Port)
+	if t.service.Annotations[LoadBalancerAllocatingPortKey] == "true" {
+		portNumber = int64(port.NodePort)
+	}
 	return elbv2model.ListenerSpec{
 		LoadBalancerARN: t.loadBalancer.LoadBalancerARN(),
-		Port:            int64(port.Port),
+		Port:            portNumber,
 		Protocol:        listenerProtocol,
 		Certificates:    certificates,
 		SSLPolicy:       sslPolicy,
