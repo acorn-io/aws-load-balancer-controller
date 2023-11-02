@@ -111,6 +111,7 @@ func (r *serviceReconciler) reconcile(ctx context.Context, req ctrl.Request) err
 		return client.IgnoreNotFound(err)
 	}
 	if svc.Annotations[service.LoadBalancerAllocatingPortKey] == "true" {
+		// AllocateService has to be locked to guarantee thread-safe since it read/writes map concurrently
 		r.lock.Lock()
 		if err := r.allocatedService(ctx, svc); err != nil {
 			r.lock.Unlock()
@@ -129,7 +130,8 @@ func (r *serviceReconciler) reconcile(ctx context.Context, req ctrl.Request) err
 	return r.reconcileLoadBalancerResources(ctx, svc, stack, lb, backendSGRequired)
 }
 
-// allocatedService allocates a stack to a service so that it can share load balancer resources with other services.
+// AllocateService makes sure that each service is allocated to a virtual stack, and a stack will not have more than 50 service/listener(the limit of listener on NLB).
+// It maintains an in-memory cache to be able to track the usage. If no stack is available, it will create a new stack.
 func (r *serviceReconciler) allocatedService(ctx context.Context, svc *corev1.Service) error {
 	if !r.initialized {
 		var serviceList corev1.ServiceList

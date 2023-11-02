@@ -1431,6 +1431,7 @@ func Test_defaultModelBuildTask_buildLoadBalancerName(t *testing.T) {
 				service:          tt.service,
 				clusterName:      tt.clusterName,
 				annotationParser: annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io"),
+				serviceUtils:     &defaultServiceUtils{},
 			}
 			got, err := task.buildLoadBalancerName(context.Background(), tt.scheme)
 			if err != nil {

@@ -112,23 +112,23 @@ func (b *defaultModelBuilder) Build(ctx context.Context, service *corev1.Service
 	if !b.initialized {
 		// if not initialized, we need to build the global cache based on existing services
 		var serviceList corev1.ServiceList
-		if err := b.client.List(ctx, &serviceList); err != nil {
-			return nil, nil, false, err
-		}
-		for _, svc := range serviceList.Items {
-			if svc.Annotations[LoadBalancerStackKey] != "" && svc.DeletionTimestamp.IsZero() {
-				stackID := core.StackID(types.NamespacedName{
-					Namespace: "stack",
-					Name:      svc.Annotations[LoadBalancerStackKey],
-				})
-				if b.stackGlobalCache[stackID] == nil {
+		if b.client != nil {
+			if err := b.client.List(ctx, &serviceList); err != nil {
+				return nil, nil, false, err
+			}
+			for _, svc := range serviceList.Items {
+				if svc.Annotations[LoadBalancerStackKey] != "" && svc.DeletionTimestamp.IsZero() {
+					stackID := core.StackID(types.NamespacedName{
+						Namespace: "stack",
+						Name:      svc.Annotations[LoadBalancerStackKey],
+					})
 					b.lock.Lock()
-					b.stackGlobalCache[stackID] = core.NewDefaultStack(stackID)
+					if b.stackGlobalCache[stackID] == nil {
+						b.stackGlobalCache[stackID] = core.NewDefaultStack(stackID)
+					}
+					b.stackGlobalCache[stackID].AddService(&svc)
 					b.lock.Unlock()
 				}
-				b.lock.Lock()
-				b.stackGlobalCache[stackID].AddService(&svc)
-				b.lock.Unlock()
 			}
 		}
 		b.initialized = true
@@ -148,15 +148,13 @@ func (b *defaultModelBuilder) Build(ctx context.Context, service *corev1.Service
 			Namespace: "stack",
 			Name:      service.Annotations[LoadBalancerStackKey],
 		})
+		b.lock.Lock()
 		if b.stackGlobalCache[stackID] == nil {
 			s := core.NewDefaultStack(stackID)
-			b.lock.Lock()
 			b.stackGlobalCache[stackID] = s
-			b.lock.Unlock()
 		}
-		b.lock.RLock()
 		stack = b.stackGlobalCache[stackID]
-		b.lock.RUnlock()
+		b.lock.Unlock()
 	}
 	task := &defaultModelBuildTask{
 		clusterName:              b.clusterName,
