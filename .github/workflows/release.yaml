@@ -17,4 +17,4 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push
         run: |-
-          IMG="ghcr.io/${{ github.repository }}:${{ github.ref_name }}" make docker-push-w-buildx
+          IMG="ghcr.io/${{ github.repository }}:${{ github.ref_name }}" IMG_PLATFORM="linux/amd64" make docker-push-w-buildx
