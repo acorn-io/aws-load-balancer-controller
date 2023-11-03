@@ -2,12 +2,16 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/aws/services"
@@ -16,8 +20,10 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/deploy/tracking"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core/graph"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/networking"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -26,6 +32,9 @@ const (
 	LoadBalancerTargetTypeIP       = "ip"
 	LoadBalancerTargetTypeInstance = "instance"
 	lbAttrsDeletionProtection      = "deletion_protection.enabled"
+
+	LoadBalancerAllocatingPortKey = "service.beta.kubernetes.io/aws-load-balancer-allocating-port"
+	LoadBalancerStackKey          = "service.beta.kubernetes.io/aws-load-balancer-stack-name"
 )
 
 // ModelBuilder builds the model stack for the service resource.
@@ -40,7 +49,7 @@ func NewDefaultModelBuilder(annotationParser annotations.Parser, subnetsResolver
 	elbv2TaggingManager elbv2deploy.TaggingManager, ec2Client services.EC2, featureGates config.FeatureGates, clusterName string, defaultTags map[string]string,
 	externalManagedTags []string, defaultSSLPolicy string, defaultTargetType string, enableIPTargetType bool, serviceUtils ServiceUtils,
 	backendSGProvider networking.BackendSGProvider, sgResolver networking.SecurityGroupResolver, enableBackendSG bool,
-	disableRestrictedSGRules bool) *defaultModelBuilder {
+	disableRestrictedSGRules bool, k8sClient client.Client) *defaultModelBuilder {
 	return &defaultModelBuilder{
 		annotationParser:         annotationParser,
 		subnetsResolver:          subnetsResolver,
@@ -61,6 +70,8 @@ func NewDefaultModelBuilder(annotationParser annotations.Parser, subnetsResolver
 		ec2Client:                ec2Client,
 		enableBackendSG:          enableBackendSG,
 		disableRestrictedSGRules: disableRestrictedSGRules,
+		stackGlobalCache:         map[core.StackID]core.Stack{},
+		client:                   k8sClient,
 	}
 }
 
@@ -80,6 +91,8 @@ type defaultModelBuilder struct {
 	enableBackendSG          bool
 	disableRestrictedSGRules bool
 
+	stackGlobalCache map[core.StackID]core.Stack
+
 	clusterName         string
 	vpcID               string
 	defaultTags         map[string]string
@@ -87,10 +100,62 @@ type defaultModelBuilder struct {
 	defaultSSLPolicy    string
 	defaultTargetType   elbv2model.TargetType
 	enableIPTargetType  bool
+
+	client client.Client
+
+	initialized bool
+	lock        sync.RWMutex
 }
 
 func (b *defaultModelBuilder) Build(ctx context.Context, service *corev1.Service) (core.Stack, *elbv2model.LoadBalancer, bool, error) {
-	stack := core.NewDefaultStack(core.StackID(k8s.NamespacedName(service)))
+	// Initialize the global cache if not initialized
+	if !b.initialized {
+		// if not initialized, we need to build the global cache based on existing services
+		var serviceList corev1.ServiceList
+		if b.client != nil {
+			if err := b.client.List(ctx, &serviceList); err != nil {
+				return nil, nil, false, err
+			}
+			for _, svc := range serviceList.Items {
+				if svc.Annotations[LoadBalancerStackKey] != "" && svc.DeletionTimestamp.IsZero() {
+					stackID := core.StackID(types.NamespacedName{
+						Namespace: "stack",
+						Name:      svc.Annotations[LoadBalancerStackKey],
+					})
+					b.lock.Lock()
+					if b.stackGlobalCache[stackID] == nil {
+						b.stackGlobalCache[stackID] = core.NewDefaultStack(stackID)
+					}
+					b.stackGlobalCache[stackID].AddService(&svc)
+					b.lock.Unlock()
+				}
+			}
+		}
+		b.initialized = true
+	}
+
+	// For each stack ID, if we found the stack annotation, this means the service will be sharing the same stack with other services
+	// If so, we should reuse the same stack in the cache so that we can reuse the load balancer with shared listeners
+	stackID := core.StackID(k8s.NamespacedName(service))
+	var stack core.Stack
+	stack = core.NewDefaultStack(stackID)
+	if service.Annotations[LoadBalancerAllocatingPortKey] == "true" {
+		// service will be allocated to a stack with shared loadbalancer
+		if service.Annotations[LoadBalancerStackKey] == "" {
+			return nil, nil, false, errors.Errorf("service %v/%v is waiting to allocated for a stack", service.Namespace, service.Name)
+		}
+		stackID = core.StackID(types.NamespacedName{
+			Namespace: "stack",
+			Name:      service.Annotations[LoadBalancerStackKey],
+		})
+		b.lock.Lock()
+		if b.stackGlobalCache[stackID] == nil {
+			s := core.NewDefaultStack(stackID)
+			b.stackGlobalCache[stackID] = s
+		}
+		stack = b.stackGlobalCache[stackID]
+		b.lock.Unlock()
+	}
 	task := &defaultModelBuildTask{
 		clusterName:              b.clusterName,
 		vpcID:                    b.vpcID,
@@ -221,13 +286,63 @@ func (t *defaultModelBuildTask) run(ctx context.Context) error {
 				return errors.Errorf("deletion_protection is enabled, cannot delete the service: %v", t.service.Name)
 			}
 		}
+
+		t.cleanupStackWithRemovingService()
 		return nil
 	}
+	t.stack.AddService(t.service)
 	err := t.buildModel(ctx)
 	return err
 }
 
+// When service is deleted, update resources in the stack to make sure things are cleaned up properly.
+func (t *defaultModelBuildTask) cleanupStackWithRemovingService() {
+	for _, port := range t.service.Spec.Ports {
+		t.stack.RemoveResource(graph.ResourceUID{
+			ResID:   fmt.Sprintf("%v", port.NodePort),
+			ResType: reflect.TypeOf(&elbv2model.Listener{}),
+		})
+		svcPort := intstr.FromInt(int(port.Port))
+		tgResourceID := t.buildTargetGroupResourceID(k8s.NamespacedName(t.service), svcPort)
+		var targetGroups []*elbv2model.TargetGroup
+		var targetGroupBindingResources []*elbv2model.TargetGroupBindingResource
+		t.stack.ListResources(&targetGroups)
+		t.stack.ListResources(&targetGroupBindingResources)
+		for _, tg := range targetGroups {
+			if tg.ID() == tgResourceID {
+				t.stack.RemoveResource(graph.ResourceUID{
+					ResID:   tg.ID(),
+					ResType: reflect.TypeOf(tg),
+				})
+			}
+		}
+		for _, tgBinding := range targetGroupBindingResources {
+			if tgBinding.ID() == tgResourceID {
+				t.stack.RemoveResource(graph.ResourceUID{
+					ResID:   tgBinding.ID(),
+					ResType: reflect.TypeOf(tgBinding),
+				})
+			}
+		}
+	}
+	// Delete the load balancer if there is no listener left.
+	var resLSs []*elbv2model.Listener
+	t.stack.ListResources(&resLSs)
+	if len(resLSs) == 0 {
+		t.stack.RemoveResource(graph.ResourceUID{
+			ResID:   "LoadBalancer",
+			ResType: reflect.TypeOf(&elbv2model.LoadBalancer{}),
+		})
+		t.loadBalancer = nil
+	}
+	t.stack.RemoveService(t.service)
+}
+
 func (t *defaultModelBuildTask) buildModel(ctx context.Context) error {
+	// always lock the stack building models. Since stack can be accessed by multiple goroutines from multiple service reconciliation loops,
+	// make sure only one goroutine is building the model at a time to guarantee thread safety.
+	t.stack.Lock()
+	defer t.stack.Unlock()
 	scheme, err := t.buildLoadBalancerScheme(ctx)
 	if err != nil {
 		return err
@@ -261,4 +376,15 @@ func (t *defaultModelBuildTask) getDeletionProtectionViaAnnotation(svc corev1.Se
 		return deletionProtectionEnabled, nil
 	}
 	return false, nil
+}
+
+func (t *defaultModelBuildTask) stackID() core.StackID {
+	stackID := core.StackID(k8s.NamespacedName(t.service))
+	if t.service.Annotations[LoadBalancerStackKey] != "" {
+		stackID = core.StackID(types.NamespacedName{
+			Namespace: "stack",
+			Name:      t.service.Annotations[LoadBalancerStackKey],
+		})
+	}
+	return stackID
 }

@@ -2,6 +2,7 @@ package ec2
 
 import (
 	"context"
+
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/util/sets"

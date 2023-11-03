@@ -1,8 +1,11 @@
 package core
 
 import (
-	"github.com/pkg/errors"
 	"reflect"
+	"sync"
+
+	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core/graph"
 )
 
@@ -13,6 +16,19 @@ type Stack interface {
 
 	// Add a resource into stack.
 	AddResource(res Resource) error
+
+	// Remove a resource
+	RemoveResource(id graph.ResourceUID)
+
+	AddService(service *corev1.Service)
+
+	RemoveService(service *corev1.Service)
+
+	ListServices() []corev1.Service
+
+	Lock()
+
+	Unlock()
 
 	// Add a dependency relationship between resources.
 	AddDependency(dependee Resource, depender Resource) error
@@ -30,8 +46,10 @@ func NewDefaultStack(stackID StackID) *defaultStack {
 	return &defaultStack{
 		stackID: stackID,
 
+		services:      make(map[string]corev1.Service),
 		resources:     make(map[graph.ResourceUID]Resource),
 		resourceGraph: graph.NewDefaultResourceGraph(),
+		lock:          sync.Mutex{},
 	}
 }
 
@@ -41,8 +59,11 @@ var _ Stack = &defaultStack{}
 type defaultStack struct {
 	stackID StackID
 
+	services      map[string]corev1.Service
 	resources     map[graph.ResourceUID]Resource
 	resourceGraph graph.ResourceGraph
+
+	lock sync.Mutex
 }
 
 func (s *defaultStack) StackID() StackID {
@@ -58,6 +79,26 @@ func (s *defaultStack) AddResource(res Resource) error {
 	s.resources[resUID] = res
 	s.resourceGraph.AddNode(resUID)
 	return nil
+}
+
+func (s *defaultStack) RemoveResource(id graph.ResourceUID) {
+	delete(s.resources, id)
+	s.resourceGraph.RemoveNode(id)
+}
+
+func (s *defaultStack) AddService(service *corev1.Service) {
+	s.services[string(service.UID)] = *service
+}
+
+func (s *defaultStack) RemoveService(service *corev1.Service) {
+	delete(s.services, string(service.UID))
+}
+
+func (s *defaultStack) ListServices() (result []corev1.Service) {
+	for _, service := range s.services {
+		result = append(result, service)
+	}
+	return
 }
 
 // Add a dependency relationship between resources.
@@ -101,6 +142,9 @@ func (s *defaultStack) ListResources(pResourceSlice interface{}) error {
 
 func (s *defaultStack) TopologicalTraversal(visitor ResourceVisitor) error {
 	return graph.TopologicalTraversal(s.resourceGraph, func(uid graph.ResourceUID) error {
+		if _, ok := s.resources[uid]; !ok {
+			return nil
+		}
 		return visitor.Visit(s.resources[uid])
 	})
 }
@@ -111,4 +155,12 @@ func (s *defaultStack) computeResourceUID(res Resource) graph.ResourceUID {
 		ResType: reflect.TypeOf(res),
 		ResID:   res.ID(),
 	}
+}
+
+func (s *defaultStack) Lock() {
+	s.lock.Lock()
+}
+
+func (s *defaultStack) Unlock() {
+	s.lock.Unlock()
 }

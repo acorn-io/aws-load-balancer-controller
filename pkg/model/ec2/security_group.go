@@ -2,8 +2,11 @@ package ec2
 
 import (
 	"context"
+	"reflect"
+
 	"github.com/pkg/errors"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/core/graph"
 )
 
 var _ core.Resource = &SecurityGroup{}
@@ -26,6 +29,18 @@ func NewSecurityGroup(stack core.Stack, id string, spec SecurityGroupSpec) *Secu
 		Spec:         spec,
 		Status:       nil,
 	}
+	// since security can be overwritten, remove and re-add it to the stack to make sure latest spec is updated
+	var sgRes []*SecurityGroup
+	stack.ListResources(&sgRes)
+	for _, res := range sgRes {
+		if res.ID() == id {
+			sg.Status = res.Status
+		}
+	}
+	stack.RemoveResource(graph.ResourceUID{
+		ResType: reflect.TypeOf(&SecurityGroup{}),
+		ResID:   id,
+	})
 	stack.AddResource(sg)
 	return sg
 }
