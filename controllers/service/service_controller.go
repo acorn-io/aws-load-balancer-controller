@@ -309,7 +309,8 @@ func (r *serviceReconciler) updateServiceStatus(ctx context.Context, lbDNS strin
 		if svc.Annotations[service.LoadBalancerAllocatingPortKey] == "true" {
 			for _, port := range svc.Spec.Ports {
 				ingress.Ports = append(ingress.Ports, corev1.PortStatus{
-					Port: port.NodePort,
+					Port:     port.NodePort,
+					Protocol: port.Protocol,
 				})
 			}
 		}
